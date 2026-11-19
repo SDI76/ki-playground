@@ -3,7 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { SOUL, SEMANTIC, EPISODIC, BEGIN, CONTINUE, apiMd } from './templates.ts';
 
-export type RunnerType = 'extern' | 'api' | 'claude';
+export type RunnerType = 'extern' | 'api' | 'claude' | 'codex';
 
 export interface Agent {
   id: string;

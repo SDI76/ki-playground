@@ -5,7 +5,7 @@ import { Bubbles, Notes, type Note } from './Overlays';
 
 export interface AgentInfo {
   id: string; name: string; color: string; token: string;
-  runner: 'extern' | 'api' | 'claude';
+  runner: 'extern' | 'api' | 'claude' | 'codex';
   baseUrl: string; model: string; hasKey: boolean;
   beginPrompt: string; continuePrompt: string; sessionMinutes: number;
   running: boolean;
@@ -21,7 +21,7 @@ export async function api<T = any>(path: string, method = 'GET', body?: unknown)
   return data;
 }
 
-export const RUNNER_LABEL = { extern: 'Extern (API / MCP)', api: 'Modell über Endpunkt', claude: 'Claude Code' } as const;
+export const RUNNER_LABEL = { extern: 'Extern (API / MCP)', api: 'Modell über Endpunkt', claude: 'Claude Code', codex: 'Codex' } as const;
 const STATE_LABEL: Record<string, string> = { wait: 'wartet', think: 'überlegt', away: 'abwesend' };
 const STATE_TIP: Record<string, string> = {
   wait: 'Steht in einem Wait – bereit, dass die Zeit weiterläuft',
@@ -245,7 +245,8 @@ export function RunnerFields(p: {
     <>
       <label>Gesteuert von
         <select value={p.runner} onChange={(e) => p.setRunner(e.target.value as AgentInfo['runner'])}>
-          <option value="claude">Claude Code (dein Harness, headless)</option>
+          <option value="claude">Claude Code (headless, in der Sandbox)</option>
+          <option value="codex">Codex (headless, in der Sandbox)</option>
           <option value="api">Modell über Endpunkt und Token</option>
           <option value="extern">Extern – verbindet sich selbst per API oder MCP</option>
         </select>
@@ -257,7 +258,7 @@ export function RunnerFields(p: {
         </>
       )}
       {p.runner !== 'extern' && (
-        <label>Modell<input value={p.model} onChange={(e) => p.setModel(e.target.value)} placeholder={p.runner === 'claude' ? 'leer = Standard, z. B. sonnet' : 'z. B. llama3.3'} /></label>
+        <label>Modell<input value={p.model} onChange={(e) => p.setModel(e.target.value)} placeholder={p.runner === 'claude' ? 'leer = Standard, z. B. sonnet' : p.runner === 'codex' ? 'leer = Standard von Codex' : 'z. B. llama3.3'} /></label>
       )}
     </>
   );

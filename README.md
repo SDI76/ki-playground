@@ -44,7 +44,7 @@ Technisch:
   mit 60 Schritten pro Sekunde Weltzeit auf dem Server. Der Server ist die einzige Wahrheit über die Welt.
 - **Agenten-Schnittstelle:** HTTP wie im Paper, dazu ein MCP-Server (Streamable HTTP) mit denselben Werkzeugen.
   Jeder Agent hat ein eigenes Token.
-- **Antrieb:** entweder Claude Code headless im Arbeitsordner des Agenten, oder ein eingebauter Loop
+- **Antrieb:** entweder Claude Code oder Codex headless im Arbeitsordner des Agenten (in einer Sandbox), oder ein eingebauter Loop
   gegen einen OpenAI-kompatiblen Endpunkt, oder gar nichts (die KI verbindet sich selbst).
 - **Oberfläche:** React und [Three.js](https://threejs.org). Der Zustand der Welt kommt zwanzigmal pro Sekunde
   über einen WebSocket und wird im Browser geglättet.
@@ -83,11 +83,12 @@ Links unter **Agenten** auf **+ Neu**. Name und Farbe wählen, dann festlegen, w
 
 | Auswahl | Was passiert | Was du brauchst |
 |---|---|---|
-| **Claude Code** | Der Server startet eine Claude-Code-Sitzung im Arbeitsordner des Agenten. Sie steuert den Körper per `curl`. | Claude Code installiert und angemeldet. Verbraucht dein Kontingent, solange der Agent läuft. |
+| **Claude Code** | Der Server startet eine Claude-Code-Sitzung im Arbeitsordner des Agenten, in einer Sandbox. Sie steuert den Körper per `curl` und darf eigene Skripte schreiben. | Claude Code installiert und angemeldet. Verbraucht dein Abo-Kontingent, solange der Agent läuft. |
+| **Codex** | Dasselbe mit der Codex-CLI von OpenAI: gleiche Schnittstelle, gleiche Sandbox. | Codex installiert und angemeldet (CLI im `PATH` oder die ChatGPT-App; es wird die neuere Version genommen, `CODEX_BIN` legt sie fest). |
 | **Modell über Endpunkt und Token** | Ein eingebauter Loop spricht ein Modell über eine OpenAI-kompatible Adresse an. | Endpunkt (z. B. `http://localhost:11434/v1` für Ollama), Modellname, bei Bedarf ein Token. Das Modell muss Tool-Aufrufe können. |
 | **Extern** | Der Server tut nichts. Eine KI verbindet sich selbst über HTTP oder MCP. | Token und Befehle aus dem Reiter **Verbindung**. |
 
-![Drei Wege in die Welt: Claude Code über die HTTP-API, ein Endpunkt-Modell über den Runner im Server, eine externe KI über MCP oder HTTP-API](docs/anbindung.svg)
+![Drei Wege in die Welt: Claude Code oder Codex über die HTTP-API, ein Endpunkt-Modell über den Runner im Server, eine externe KI über MCP oder HTTP-API](docs/anbindung.svg)
 
 Alle drei Wege enden in derselben Welt und benutzen dieselben Aktionen. Jeder Agent weist sich mit seinem eigenen Token aus.
 Untereinander reden Agenten nie direkt: `Say` geht in die Welt, und die stellt es allen in Hörweite zu.
@@ -97,6 +98,22 @@ Zur Abrechnung bei **Claude Code**: Die Agenten laufen über das Abo, mit dem du
 Ein `ANTHROPIC_API_KEY` in der Umgebung wird bewusst nicht an sie weitergegeben, sonst würde Claude Code über den Schlüssel abrechnen.
 
 Mehrere Agenten können gleichzeitig auf der Insel sein. Sie sehen einander und können miteinander sprechen.
+
+#### Die Sandbox für Claude Code und Codex
+
+Beide Programme führen Befehle auf deinem Rechner aus. Damit ein Agent Skripte schreiben darf, ohne an deine Daten zu kommen,
+sperrt der Server ihn mit der Sandbox des jeweiligen Programms ein (auf macOS vom Betriebssystem durchgesetzt):
+
+| | Erlaubt | Gesperrt |
+|---|---|---|
+| **Dateien** | lesen und schreiben im eigenen Arbeitsordner, Systemprogramme wie `python3` und `curl` ausführen | dein Benutzerordner, die Ordner anderer Agenten, deren Tokens |
+| **Netz** | die Simulation auf `localhost` | das Internet, auch zum Nachladen von Paketen |
+| **Umgebung** | `PATH`, `HOME` und ähnliches | Schlüssel und Tokens aus deiner Shell |
+| **Einstellungen** | nur was der Server mitgibt | deine eigenen Claude-Code- und Codex-Einstellungen, MCP-Server und Plugins |
+
+Zwei Grenzen der Sandbox: Auf macOS lässt sich `localhost` nicht auf einen Port beschränken, ein Agent erreicht also auch
+andere Dienste, die lokal auf deinem Rechner lauschen. Und eine Höchstlaufzeit für Skripte gibt es nicht; ein hängendes Skript
+endet erst, wenn die Sitzung abläuft oder du den Agenten stoppst.
 
 ### 2. Prompts vor dem Start bearbeiten
 
@@ -171,7 +188,7 @@ Der Preis: Die Welt bewegt sich in Schüben statt fliessend, und der langsamste 
 | `server/agents.ts` | Agenten, Tokens, Arbeitsordner, Erkennen von Dateiänderungen |
 | `server/templates.ts` | Startdateien neuer Agenten (`SOUL.md` usw.) und `API.md` |
 | `server/tools.ts` | eine Werkzeugliste für HTTP-API, MCP und den eingebauten Loop |
-| `server/runner.ts` | treibt Agenten an: Claude Code oder Modell über Endpunkt |
+| `server/runner.ts` | treibt Agenten an: Claude Code, Codex oder Modell über Endpunkt; setzt die Sandbox |
 | `server/index.ts` | HTTP, WebSocket, MCP unter `/mcp` |
 | `client/src/` | Weboberfläche (React) und 3D-Ansicht (Three.js) |
 
