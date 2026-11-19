@@ -174,6 +174,9 @@ export class Runners {
         const env = { ...process.env };
         delete env.CLAUDECODE;
         delete env.CLAUDE_CODE_ENTRYPOINT;
+        // Ohne Schlüssel rechnet Claude Code über das angemeldete Abo ab, nicht über die API.
+        delete env.ANTHROPIC_API_KEY;
+        delete env.ANTHROPIC_AUTH_TOKEN;
         proc = spawn('claude', args, { cwd: store.dir(agent), env, stdio: ['ignore', 'pipe', 'pipe'] });
         stopped = false;
         // Verbrauch: laufend aus den einzelnen Antworten, am Ende mit der Abrechnung des Laufs abgeglichen

@@ -87,6 +87,15 @@ Links unter **Agenten** auf **+ Neu**. Name und Farbe wählen, dann festlegen, w
 | **Modell über Endpunkt und Token** | Ein eingebauter Loop spricht ein Modell über eine OpenAI-kompatible Adresse an. | Endpunkt (z. B. `http://localhost:11434/v1` für Ollama), Modellname, bei Bedarf ein Token. Das Modell muss Tool-Aufrufe können. |
 | **Extern** | Der Server tut nichts. Eine KI verbindet sich selbst über HTTP oder MCP. | Token und Befehle aus dem Reiter **Verbindung**. |
 
+![Drei Wege in die Welt: Claude Code über die HTTP-API, ein Endpunkt-Modell über den Runner im Server, eine externe KI über MCP oder HTTP-API](docs/anbindung.svg)
+
+Alle drei Wege enden in derselben Welt und benutzen dieselben Aktionen. Jeder Agent weist sich mit seinem eigenen Token aus.
+Untereinander reden Agenten nie direkt: `Say` geht in die Welt, und die stellt es allen in Hörweite zu.
+Der Browser ist nur Ansicht und Fernbedienung.
+
+Zur Abrechnung bei **Claude Code**: Die Agenten laufen über das Abo, mit dem du in Claude Code angemeldet bist.
+Ein `ANTHROPIC_API_KEY` in der Umgebung wird bewusst nicht an sie weitergegeben, sonst würde Claude Code über den Schlüssel abrechnen.
+
 Mehrere Agenten können gleichzeitig auf der Insel sein. Sie sehen einander und können miteinander sprechen.
 
 ### 2. Prompts vor dem Start bearbeiten
