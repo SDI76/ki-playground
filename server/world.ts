@@ -48,9 +48,12 @@ interface Body {
 }
 
 const DT = 1 / 60;
-const GRAVITY = -20;
-const WALK_SPEED = 6;
-const JUMP_SPEED = 10;
+/** Einstellbare Spielphysik. weight ist ein Faktor auf das Gewicht aller losen Objekte. */
+export interface Physics { weight: number; friction: number; spin: number; gravity: number; walk: number; jump: number }
+export const PHYSICS_DEFAULT: Physics = { weight: 10, friction: 0.9, spin: 0.4, gravity: 20, walk: 6, jump: 10 };
+export const PHYSICS_RANGE: Record<keyof Physics, [number, number]> = {
+  weight: [0.5, 40], friction: [0.1, 2], spin: [0, 10], gravity: [2, 60], walk: [1, 15], jump: [2, 25],
+};
 const REACH = 3.5;
 const MAX_THROW = 25;
 const MAX_CUBES = 48;
@@ -123,6 +126,7 @@ export class World {
   resetIntervalMin = 60;
   /** Form des Felsens: kantiger Block (bleibt liegen) oder Kugel (rollt). */
   rockShape: 'block' | 'ball' = 'block';
+  physics: Physics = { ...PHYSICS_DEFAULT };
   /** Wartemodus: Die Zeit läuft nur, solange alle beteiligten Agenten in einem Wait stehen. */
   /** Wie weit Gesprochenes zu hören ist, in Einheiten. 0 = überall. */
   hearRange = 30;
@@ -141,7 +145,7 @@ export class World {
   }
 
   private build() {
-    this.rw = new RAPIER.World({ x: 0, y: GRAVITY, z: 0 });
+    this.rw = new RAPIER.World({ x: 0, y: -this.physics.gravity, z: 0 });
     this.rw.timestep = DT;
     for (const s of STATICS) {
       const b = this.rw.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(...s.center));
@@ -168,14 +172,14 @@ export class World {
 
   private addObj(kind: ObjKind, name: string, pos: Vec3, spawned: boolean): Obj {
     const body = this.rw.createRigidBody(
-      RAPIER.RigidBodyDesc.dynamic().setTranslation(...pos).setCcdEnabled(true).setLinearDamping(0.05).setAngularDamping(0.4),
+      RAPIER.RigidBodyDesc.dynamic().setTranslation(...pos).setCcdEnabled(true).setLinearDamping(0.05).setAngularDamping(this.physics.spin),
     );
     let size: Vec3;
     let color: string;
     if (kind === 'cube') {
       size = [1, 1, 1];
       color = '#b9c0c9';
-      this.rw.createCollider(RAPIER.ColliderDesc.cuboid(0.5, 0.5, 0.5).setFriction(0.9).setRestitution(0.05).setDensity(1), body);
+      this.rw.createCollider(RAPIER.ColliderDesc.cuboid(0.5, 0.5, 0.5).setFriction(this.physics.friction).setRestitution(0.05).setDensity(this.physics.weight), body);
     } else if (kind === 'rock') {
       size = [1.4, 1.4, 1.4];
       color = '#2a3644';
@@ -191,8 +195,8 @@ export class World {
           RAPIER.ColliderDesc.cuboid(0.34, 0.16, 0.18)
             .setTranslation(Math.cos(a) * R, 0, Math.sin(a) * R)
             .setRotation(eulerDegToQuat([0, (-a * 180) / Math.PI + 90, 0]))
-            .setFriction(0.7)
-            .setDensity(0.6),
+            .setFriction(this.physics.friction * 0.78)
+            .setDensity(0.6 * this.physics.weight),
           body,
         );
       }
@@ -205,8 +209,69 @@ export class World {
   private rockCollider() {
     // beide Formen wiegen etwa gleich viel
     return this.rockShape === 'ball'
-      ? RAPIER.ColliderDesc.ball(0.7).setFriction(0.9).setRestitution(0.2).setDensity(3)
-      : RAPIER.ColliderDesc.cuboid(0.7, 0.7, 0.7).setFriction(0.9).setRestitution(0.1).setDensity(1.6);
+      ? RAPIER.ColliderDesc.ball(0.7).setFriction(this.physics.friction).setRestitution(0.2).setDensity(3 * this.physics.weight)
+      : RAPIER.ColliderDesc.cuboid(0.7, 0.7, 0.7).setFriction(this.physics.friction).setRestitution(0.1).setDensity(1.6 * this.physics.weight);
+  }
+
+  /** Ändert Physikwerte im laufenden Betrieb; unbekannte Schlüssel und Unsinn werden ignoriert. */
+  setPhysics(patch: Partial<Record<keyof Physics, unknown>>) {
+    for (const k of Object.keys(PHYSICS_RANGE) as (keyof Physics)[]) {
+      const v = Number(patch?.[k]);
+      if (patch?.[k] === undefined || !Number.isFinite(v)) continue;
+      const [lo, hi] = PHYSICS_RANGE[k];
+      this.physics[k] = Math.max(lo, Math.min(hi, v));
+    }
+    const ph = this.physics;
+    this.rw.gravity = { x: 0, y: -ph.gravity, z: 0 };
+    for (const o of this.objs) {
+      const base = o.kind === 'cube' ? 1 : o.kind === 'ring' ? 0.6 : this.rockShape === 'ball' ? 3 : 1.6;
+      for (let i = 0; i < o.body.numColliders(); i++) {
+        const c = o.body.collider(i);
+        c.setDensity(base * ph.weight);
+        c.setFriction(o.kind === 'ring' ? ph.friction * 0.78 : ph.friction);
+      }
+      o.body.setAngularDamping(ph.spin);
+      o.body.wakeUp();
+    }
+  }
+
+  /** Setzt von aussen ein neues Ding in die laufende Welt. Es verschwindet beim nächsten Welt-Reset. */
+  spawnObj(kind: unknown, position: unknown) {
+    if (kind !== 'cube' && kind !== 'rock' && kind !== 'ring') throw new Error('kind muss cube, rock oder ring sein.');
+    if (this.objs.filter((o) => !o.lost).length >= 90) throw new Error('Es liegen schon sehr viele Dinge in der Welt (Grenze: 90).');
+    const pos = asVec3(position, 'position');
+    const prefix = kind === 'cube' ? 'Cube_' : kind === 'rock' ? 'Rock_' : 'Ring_';
+    let n = 0;
+    for (const o of this.objs) if (o.name.startsWith(prefix)) n = Math.max(n, Number(o.name.slice(prefix.length)) || 0);
+    const o = this.addObj(kind, prefix + (n + 1), pos, true);
+    return { ok: true, id: o.id, name: o.name };
+  }
+
+  /** Nimmt ein Ding aus der Welt. Hält es gerade jemand, ist seine Hand danach leer. */
+  removeObj(id: number) {
+    const i = this.objs.findIndex((o) => o.id === id);
+    if (i < 0) throw new Error('Dieses Ding gibt es nicht.');
+    const o = this.objs[i];
+    for (const b of this.bodies.values()) if (b.holding === o) b.holding = null;
+    this.rw.removeRigidBody(o.body);
+    this.objs.splice(i, 1);
+    return { ok: true, removed: o.name };
+  }
+
+  /** Eine Stimme ohne Körper: alle hören sie, wie weit sie auch weg sind. */
+  announce(text: unknown, from = 'Stimme') {
+    const t = String(text ?? '').trim().slice(0, 500);
+    if (!t) throw new Error('text fehlt');
+    const msg = { time: r2(this.simTime), from, text: t };
+    this.chat.push(msg);
+    if (this.chat.length > 50) this.chat.shift();
+    for (const b of this.bodies.values()) {
+      b.heard.push(msg);
+      if (b.heard.length > 30) b.heard.shift();
+      b.events.push({ time: msg.time, type: 'heard', from, text: t });
+      this.interruptWaits(b);
+    }
+    return { ok: true, heard_by: [...this.bodies.values()].map((b) => b.name) };
   }
 
   /** Tauscht die Form des Felsens an Ort und Stelle. */
@@ -301,7 +366,7 @@ export class World {
     const b = this.need(id);
     if (!b.grounded) return { ok: false, error: 'Nicht am Boden – Springen geht nur mit Bodenkontakt.' };
     const v = b.body.linvel();
-    b.body.setLinvel({ x: v.x, y: JUMP_SPEED, z: v.z }, true);
+    b.body.setLinvel({ x: v.x, y: this.physics.jump, z: v.z }, true);
     b.grounded = false;
     return { ok: true };
   }
@@ -516,7 +581,7 @@ export class World {
             b.events.push({ time: r2(this.simTime), type: 'blocked', ...b.block });
           }
         }
-        const s = Math.min(WALK_SPEED, d / DT);
+        const s = Math.min(this.physics.walk, d / DT);
         vx = (dx / d) * s;
         vz = (dz / d) * s;
         b.yaw = Math.atan2(dx, dz);

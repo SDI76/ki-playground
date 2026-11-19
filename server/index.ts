@@ -5,9 +5,10 @@ import express from 'express';
 import { WebSocketServer, WebSocket } from 'ws';
 import { createServer as createVite } from 'vite';
 import react from '@vitejs/plugin-react';
-import { World, STATICS } from './world.ts';
+import { World, STATICS, PHYSICS_DEFAULT, PHYSICS_RANGE } from './world.ts';
 import { AgentStore, DATA_ROOT, type Agent } from './agents.ts';
 import { Runners } from './runner.ts';
+import { Recorder } from './recorder.ts';
 import { TOOLS, runTool, normalizeAction } from './tools.ts';
 
 const PORT = Number(process.env.PORT) || 4710;
@@ -18,6 +19,10 @@ const store = new AgentStore(BASE);
 const runners = new Runners(world, store);
 for (const a of store.agents) world.addBody(a.id, a.name, a.color);
 
+// Aufnahmen für das Replay
+const recorder = new Recorder(path.join(DATA_ROOT, 'replays.db'));
+let autoRecord = false;
+
 // Welt-Einstellungen überdauern einen Neustart
 const SETTINGS = path.join(DATA_ROOT, 'settings.json');
 try {
@@ -26,8 +31,10 @@ try {
   if (s.rockShape === 'ball' || s.rockShape === 'block') world.setRockShape(s.rockShape);
   if (typeof s.lockstep === 'boolean') world.lockstep = s.lockstep;
   if (typeof s.hearRange === 'number') world.hearRange = s.hearRange;
+  if (s.physics && typeof s.physics === 'object') world.setPhysics(s.physics);
+  if (typeof s.autoRecord === 'boolean') autoRecord = s.autoRecord;
 } catch { /* noch keine gespeichert */ }
-const saveSettings = () => fs.writeFileSync(SETTINGS, JSON.stringify({ resetIntervalMin: world.resetIntervalMin, rockShape: world.rockShape, lockstep: world.lockstep, hearRange: world.hearRange }, null, 2));
+const saveSettings = () => fs.writeFileSync(SETTINGS, JSON.stringify({ resetIntervalMin: world.resetIntervalMin, rockShape: world.rockShape, lockstep: world.lockstep, hearRange: world.hearRange, physics: world.physics, autoRecord }, null, 2));
 
 const app = express();
 app.use(express.json({ limit: '4mb' }));
@@ -44,15 +51,36 @@ const broadcast = (msg: unknown) => {
   for (const c of wss.clients) if (c.readyState === WebSocket.OPEN) c.send(s);
 };
 wss.on('connection', (ws) => ws.send(JSON.stringify(world.snapshot())));
-store.onLog = (id, entry) => broadcast({ t: 'log', id, entry });
-store.onNote = (id, path, text, isNew) => broadcast({ t: 'note', id, path, text, isNew });
+store.onLog = (id, entry) => { broadcast({ t: 'log', id, entry }); recorder.event(world.simTime, 'log', id, entry); };
+store.onNote = (id, path, text, isNew) => { broadcast({ t: 'note', id, path, text, isNew }); recorder.event(world.simTime, 'note', id, { path, text, isNew }); };
+
+const stamp = () => new Date().toLocaleString('de-CH', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+const startRecording = (name?: string) => {
+  recorder.start(String(name || '').trim().slice(0, 120) || `Play vom ${stamp()}`, world.simTime, {
+    agents: store.agents.map((a) => ({ id: a.id, name: a.name, color: a.color, runner: a.runner, model: a.model })),
+    statics: STATICS, physics: { ...world.physics }, rockShape: world.rockShape, hearRange: world.hearRange, lockstep: world.lockstep,
+  });
+  recorder.frame(world.snapshot());
+  broadcast({ t: 'agents' });
+};
+const stopRecording = () => {
+  if (!recorder.current) return;
+  recorder.stop(world.simTime);
+  broadcast({ t: 'agents' });
+};
 setInterval(() => store.scan(), 1000);
 runners.onChange = () => broadcast({ t: 'agents' });
 store.onUsage = (id, usage) => broadcast({ t: 'usage', id, usage });
-world.onReset = () => broadcast({ t: 'reset' });
+world.onReset = () => {
+  broadcast({ t: 'reset' });
+  // jeder Welt-Reset beginnt bei Autorecord ein neues Play
+  if (recorder.current && autoRecord) { stopRecording(); startRecording(); }
+  else recorder.event(world.simTime, 'reset', '', {});
+};
 
 let last = performance.now();
 let frame = 0;
+let lastRec = 0;
 setInterval(() => {
   const now = performance.now();
   world.tick((now - last) / 1000);
@@ -60,6 +88,9 @@ setInterval(() => {
   frame++;
   // 20 Bilder pro Sekunde, im Pausenzustand nur gelegentlich
   if (frame % (world.paused ? 30 : 3) === 0) broadcast(world.snapshot());
+  // Aufnahme: zehn Bilder pro Sekunde Weltzeit (bei hohem Tempo so viele, wie die Welt hergibt)
+  if (recorder.current && !world.paused && Math.abs(world.simTime - lastRec) >= 0.1) { lastRec = world.simTime; recorder.frame(world.snapshot()); }
+  if (frame % 120 === 0) recorder.flush();
 }, 1000 / 60);
 
 // ---------- Steuerung (Weboberfläche) ----------
@@ -77,12 +108,15 @@ const wrap = (fn: (req: express.Request, res: express.Response) => unknown) => a
 app.get('/api/state', wrap(() => ({
   agents: store.agents.map(pub),
   statics: STATICS,
-  world: { paused: world.paused, speed: world.speed, resetIntervalMin: world.resetIntervalMin, rockShape: world.rockShape, lockstep: world.lockstep, hearRange: world.hearRange, time: world.simTime },
+  world: { paused: world.paused, speed: world.speed, resetIntervalMin: world.resetIntervalMin, rockShape: world.rockShape, lockstep: world.lockstep, hearRange: world.hearRange, physics: world.physics, physicsDefault: PHYSICS_DEFAULT, physicsRange: PHYSICS_RANGE, time: world.simTime, autoRecord, recording: recorder.current ? { ...recorder.current } : null },
   baseUrl: BASE,
 })));
 
 app.post('/api/control', wrap((req) => {
-  const { paused, speed, resetIntervalMin, rockShape, lockstep, hearRange } = req.body || {};
+  const { paused, speed, resetIntervalMin, rockShape, lockstep, hearRange, physics } = req.body || {};
+  if (typeof req.body?.autoRecord === 'boolean') { autoRecord = req.body.autoRecord; saveSettings(); broadcast({ t: 'agents' }); }
+  if (paused === false && autoRecord && !recorder.current) startRecording();
+  if (physics && typeof physics === 'object') { world.setPhysics(physics); saveSettings(); broadcast({ t: 'agents' }); }
   if (typeof hearRange === 'number' && hearRange >= 0) { world.hearRange = hearRange; saveSettings(); broadcast({ t: 'agents' }); }
   if (typeof lockstep === 'boolean') { world.lockstep = lockstep; saveSettings(); broadcast({ t: 'agents' }); }
   if (rockShape === 'block' || rockShape === 'ball') { world.setRockShape(rockShape); saveSettings(); broadcast({ t: 'agents' }); }
@@ -96,6 +130,40 @@ app.post('/api/control', wrap((req) => {
 }));
 
 app.post('/api/reset', wrap(() => { world.reset(); broadcast(world.snapshot()); }));
+
+// ---------- Eingriffe von aussen in die laufende Welt ----------
+
+app.post('/api/world/objects', wrap((req) => { const r = world.spawnObj(req.body?.kind, req.body?.position); broadcast(world.snapshot()); return r; }));
+app.delete('/api/world/objects/:id', wrap((req) => { const r = world.removeObj(Number(req.params.id)); broadcast(world.snapshot()); return r; }));
+app.post('/api/world/say', wrap((req) => {
+  const r = world.announce(req.body?.text);
+  recorder.event(world.simTime, 'voice', '', { text: String(req.body?.text).trim().slice(0, 500) });
+  broadcast({ t: 'voice', text: String(req.body?.text).trim().slice(0, 500) });
+  return r;
+}));
+
+// ---------- Aufnahmen (Plays) ----------
+
+app.get('/api/plays', wrap(() => ({ plays: recorder.list(), recording: recorder.current, autoRecord })));
+app.post('/api/record', wrap((req) => {
+  if (req.body?.on) startRecording(req.body?.name);
+  else stopRecording();
+  return { recording: recorder.current };
+}));
+app.get('/api/plays/:id', wrap((req) => recorder.full(Number(req.params.id))));
+app.patch('/api/plays/:id', wrap((req) => { const p = recorder.update(Number(req.params.id), req.body || {}); broadcast({ t: 'agents' }); return p; }));
+app.delete('/api/plays/:id', wrap((req) => { recorder.remove(Number(req.params.id)); }));
+app.get('/api/plays/:id/export', (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const name = recorder.get(id).name.replace(/[^\w\-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 60) || `play-${id}`;
+    const buf = recorder.exportFile(id);
+    res.setHeader('Content-Type', 'application/gzip');
+    res.setHeader('Content-Disposition', `attachment; filename="${name}.kiplay"`);
+    res.end(buf);
+  } catch (e: any) { res.status(400).json({ error: e?.message || String(e) }); }
+});
+app.post('/api/plays/import', express.raw({ type: '*/*', limit: '300mb' }), wrap((req) => recorder.importFile(req.body as Buffer)));
 
 app.post('/api/agents', wrap((req) => {
   const a = store.create(req.body || {});
@@ -197,7 +265,7 @@ app.use(vite.middlewares);
 
 // Beim Beenden keine Agenten-Prozesse zurücklassen, die weiter Kontingent verbrauchen
 for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
-  process.on(sig, () => { runners.stopAll(); store.saveUsage(); process.exit(0); });
+  process.on(sig, () => { runners.stopAll(); store.saveUsage(); try { recorder.stop(world.simTime); recorder.close(); } catch {} process.exit(0); });
 }
 
 server.listen(PORT, '127.0.0.1', () => console.log(`KI Playground läuft auf ${BASE}`));

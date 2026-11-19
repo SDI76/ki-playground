@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Scene, type Snap } from './scene';
 import { AgentPanel } from './AgentPanel';
 import { Bubbles, Notes, type Note } from './Overlays';
+import { PlaysPanel, ReplayBar, WorldTools, type PlayData } from './Plays';
 
 export interface AgentInfo {
   id: string; name: string; color: string; token: string;
@@ -22,6 +23,17 @@ export async function api<T = any>(path: string, method = 'GET', body?: unknown)
 }
 
 export const RUNNER_LABEL = { extern: 'Extern (API / MCP)', api: 'Modell über Endpunkt', claude: 'Claude Code', codex: 'Codex' } as const;
+type PhysValues = { weight: number; friction: number; spin: number; gravity: number; walk: number; jump: number };
+type PhysState = { now: PhysValues; def: PhysValues; range: Record<keyof PhysValues, [number, number]> };
+const one = (v: number) => v.toFixed(1).replace('.', ',');
+const PHYS_FIELDS: { key: keyof PhysValues; label: string; step: number; fmt: (v: number) => string; tip: string }[] = [
+  { key: 'weight', label: 'Gewicht der Objekte', step: 0.5, fmt: (v) => `${one(v)}×`, tip: 'Schwere Würfel lassen sich schlechter wegschieben und umwerfen. Tragen und Werfen bleiben gleich.' },
+  { key: 'friction', label: 'Reibung', step: 0.05, fmt: (v) => v.toFixed(2).replace('.', ','), tip: 'Wie stark Objekte am Boden und aneinander haften.' },
+  { key: 'spin', label: 'Kippträgheit', step: 0.1, fmt: one, tip: 'Bremst Drehungen. Hohe Werte lassen Objekte träger kippen und rollen.' },
+  { key: 'gravity', label: 'Schwerkraft', step: 1, fmt: (v) => String(Math.round(v)), tip: 'Gilt für alles, auch für Sprünge und Würfe.' },
+  { key: 'walk', label: 'Lauftempo', step: 0.5, fmt: one, tip: 'Einheiten pro Sekunde.' },
+  { key: 'jump', label: 'Sprungkraft', step: 0.5, fmt: one, tip: 'Startgeschwindigkeit nach oben.' },
+];
 const STATE_LABEL: Record<string, string> = { wait: 'wartet', think: 'überlegt', away: 'abwesend' };
 const STATE_TIP: Record<string, string> = {
   wait: 'Steht in einem Wait – bereit, dass die Zeit weiterläuft',
@@ -62,9 +74,24 @@ export function App() {
   const [hearRange, setHearRange] = useState(30);
   const [resetMin, setResetMin] = useState(60);
   const [rockShape, setRockShape] = useState('block');
+  const [phys, setPhys] = useState<PhysState | null>(null);
+  const [menu, setMenu] = useState<'physics' | 'plays' | 'world' | null>(null);
+  const physOpen = menu === 'physics';
+  const setPhysOpen = (f: (v: boolean) => boolean) => setMenu((m) => (f(m === 'physics') ? 'physics' : null));
+  // Aufnahme und Replay; canRecord fehlt, solange der Server noch ohne diese Funktion läuft
+  const [canRecord, setCanRecord] = useState(false);
+  const [autoRecord, setAutoRecord] = useState(false);
+  const [recording, setRecording] = useState<{ id: number; name: string; simStart: number } | null>(null);
+  const [replay, setReplay] = useState<PlayData | null>(null);
+  const replaying = useRef(false);
+  replaying.current = !!replay;
+  const physTimer = useRef<number | undefined>(undefined);
+  const physPending = useRef<Partial<PhysValues> | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [follow, setFollow] = useState(false);
   const [adding, setAdding] = useState(false);
+  const [listOpen, setListOpen] = useState(() => { try { return localStorage.getItem('agentList') !== 'closed'; } catch { return true; } });
+  const toggleList = () => setListOpen((v) => { try { localStorage.setItem('agentList', v ? 'closed' : 'open'); } catch {} return !v; });
   const [online, setOnline] = useState(false);
   const [error, setError] = useState('');
   const logSubs = useRef(new Set<(id: string, e: LogEntry) => void>());
@@ -78,8 +105,23 @@ export function App() {
     setRockShape(s.world.rockShape);
     setLockstep(!!s.world.lockstep);
     setHearRange(s.world.hearRange ?? 30);
+    // fehlt, solange der Server noch ohne Physik-Menü läuft
+    setCanRecord('autoRecord' in s.world);
+    setAutoRecord(!!s.world.autoRecord);
+    setRecording(s.world.recording || null);
+    if (replaying.current) return; // die Insel des Replays nicht mit der Live-Insel überschreiben
+    setPhys(s.world.physics ? { now: s.world.physics, def: s.world.physicsDefault, range: s.world.physicsRange } : null);
     scene.current?.setStatics(s.statics);
   }, []);
+
+  // Regler sofort anzeigen, zum Server gebündelt schicken
+  const setPhysics = (patch: Partial<PhysValues>) => {
+    setPhys((p) => (p ? { ...p, now: { ...p.now, ...patch } } : p));
+    window.clearTimeout(physTimer.current);
+    const pending = { ...(physPending.current || {}), ...patch };
+    physPending.current = pending;
+    physTimer.current = window.setTimeout(() => { physPending.current = null; control({ physics: pending }); }, 120);
+  };
 
   const guard = useCallback(async (fn: () => Promise<unknown>) => {
     try { setError(''); await fn(); } catch (e: any) { setError(e.message); }
@@ -98,12 +140,13 @@ export function App() {
       ws.onmessage = (ev) => {
         const m = JSON.parse(ev.data);
         if (m.t === 'snap') {
-          scene.current?.apply(m as Snap);
+          if (!replaying.current) scene.current?.apply(m as Snap);
           const states: Record<string, string | null> = {};
           for (const a of m.agents) states[a.id] = a.st ?? null;
           const key = `${Math.floor(m.time)}|${m.paused}|${m.speed}|${m.resetIn}|${(m.hold || []).join()}|${JSON.stringify(states)}`;
           if (key !== lastKey) { lastKey = key; setMeta({ time: m.time, paused: m.paused, speed: m.speed, resetIn: m.resetIn, hold: m.hold || [], states }); }
         } else if (m.t === 'agents') load().catch(() => {});
+        else if (replaying.current) return;
         else if (m.t === 'log') logSubs.current.forEach((f) => f(m.id, m.entry));
         else if (m.t === 'usage') setAgents((list) => list.map((a) => (a.id === m.id ? { ...a, usage: m.usage } : a)));
         else if (m.t === 'note') noteSubs.current.forEach((f) => f(m));
@@ -116,6 +159,18 @@ export function App() {
   useEffect(() => { if (scene.current) scene.current.follow = follow ? selected : null; }, [follow, selected]);
 
   const control = (body: object) => guard(() => api('/api/control', 'POST', body));
+  const shown = replay ? ((replay.play.meta.agents || []) as unknown as AgentInfo[]) : agents;
+  const startReplay = (id: number) => guard(async () => {
+    const d = await api<PlayData>(`/api/plays/${id}`);
+    setMenu(null);
+    setSelected(null);
+    setReplay(d);
+  });
+  const exitReplay = () => {
+    replaying.current = false;
+    setReplay(null);
+    load().catch(() => {});
+  };
   const sel = agents.find((a) => a.id === selected) || null;
   const fresh = meta.time === 0 && meta.paused;
 
@@ -123,19 +178,25 @@ export function App() {
     <div className="app">
       <div className="stage" ref={host} />
 
-      <Bubbles scene={scene} agents={agents} logSubs={logSubs.current} />
-      <Notes agents={agents} noteSubs={noteSubs.current} onOpen={setSelected} />
+      <Bubbles scene={scene} agents={shown} logSubs={logSubs.current} />
+      <Notes agents={shown} noteSubs={noteSubs.current} onOpen={replay ? () => {} : setSelected} />
 
       <header className="title">
-        <span>SIMULATION</span>
-        <span className="dim"> · {!online ? 'KEINE VERBINDUNG' : fresh ? 'BEREIT' : meta.paused ? 'PAUSIERT' : meta.hold.length ? `STEHT · ${meta.hold.join(', ').toUpperCase()} ÜBERLEGT` : `LÄUFT ${meta.speed}×`}</span>
+        <span>{replay ? 'REPLAY' : 'SIMULATION'}</span>
+        <span className="dim"> · {replay ? replay.play.name.toUpperCase() : !online ? 'KEINE VERBINDUNG' : fresh ? 'BEREIT' : meta.paused ? 'PAUSIERT' : meta.hold.length ? `STEHT · ${meta.hold.join(', ').toUpperCase()} ÜBERLEGT` : `LÄUFT ${meta.speed}×`}</span>
       </header>
 
-      <aside className="panel left">
+      {!replay && <>
+      <aside className={`panel left${listOpen ? '' : ' closed'}`}>
         <div className="panel-head">
-          <h2>Agenten</h2>
-          <button className="ghost" onClick={() => setAdding((v) => !v)}>{adding ? 'Abbrechen' : '+ Neu'}</button>
+          <button className="fold" onClick={toggleList} aria-expanded={listOpen} title={listOpen ? 'Agentenliste einklappen' : 'Agentenliste ausklappen'}>
+            <span className="chev">{listOpen ? '▾' : '▸'}</span>
+            <h2>Agenten</h2>
+            {!listOpen && agents.map((x) => <i key={x.id} style={{ background: x.color }} title={x.name} />)}
+          </button>
+          {listOpen && <button className="ghost" onClick={() => setAdding((v) => !v)}>{adding ? 'Abbrechen' : '+ Neu'}</button>}
         </div>
+        {listOpen && <>
         {adding && <NewAgent count={agents.length} onDone={(id) => { setAdding(false); if (id) setSelected(id); }} onError={setError} />}
         {agents.length === 0 && !adding && <p className="hint">Noch niemand auf der Insel. Leg einen Agenten an, bearbeite seine Dateien und starte dann die Simulation.</p>}
         <ul className="agents">
@@ -158,6 +219,7 @@ export function App() {
             <input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} /> Kamera folgt {sel.name}
           </label>
         )}
+        </>}
       </aside>
 
       {sel && <AgentPanel key={sel.id} agent={sel} baseUrl={baseUrl} logSubs={logSubs.current} onClose={() => setSelected(null)} onError={setError} />}
@@ -194,15 +256,62 @@ export function App() {
           </select>
           <small>Zeit läuft</small>
         </label>
-        <label className="num">
-          <select value={rockShape} onChange={(e) => { setRockShape(e.target.value); control({ rockShape: e.target.value }); }}>
-            <option value="block">Block</option>
-            <option value="ball">Kugel, rollt</option>
-          </select>
-          <small>Form des Felsens</small>
-        </label>
+        {!phys && (
+          <label className="num">
+            <select value={rockShape} onChange={(e) => { setRockShape(e.target.value); control({ rockShape: e.target.value }); }}>
+              <option value="block">Block</option>
+              <option value="ball">Kugel, rollt</option>
+            </select>
+            <small>Form des Felsens</small>
+          </label>
+        )}
+        {canRecord && <>
+          <label className="check auto" title="Nimmt jeden Durchgang automatisch auf. Ein Welt-Reset beginnt ein neues Play.">
+            <input type="checkbox" checked={autoRecord} onChange={(e) => { setAutoRecord(e.target.checked); control({ autoRecord: e.target.checked }); }} /> Autorecord
+          </label>
+          <button className={`ghost recbtn${recording ? ' on' : ''}`} onClick={() => guard(() => api('/api/record', 'POST', { on: !recording }))} title={recording ? `Aufnahme „${recording.name}" beenden` : 'Aufnahme von Hand starten'}>
+            {recording ? `■ Stopp ${clock(Math.max(0, meta.time - recording.simStart))}` : '● Aufnahme'}
+          </button>
+          <button className={`ghost${menu === 'plays' ? ' on' : ''}`} onClick={() => setMenu((m) => (m === 'plays' ? null : 'plays'))}>Plays</button>
+          <button className={`ghost${menu === 'world' ? ' on' : ''}`} onClick={() => setMenu((m) => (m === 'world' ? null : 'world'))} title="Dinge in die Welt setzen, den Agenten etwas zurufen">＋ Welt</button>
+        </>}
+        {phys && <button className={`ghost gear${physOpen ? ' on' : ''}`} onClick={() => setPhysOpen((v) => !v)} aria-expanded={physOpen} title="Spielphysik">⚙</button>}
         <button className="ghost" onClick={() => confirm('Welt jetzt zurücksetzen? Objekte und Körper gehen auf Anfang, die Dateien der Agenten bleiben.') && guard(() => api('/api/reset', 'POST'))}>Welt zurücksetzen</button>
       </footer>
+      </>}
+
+      {replay && <ReplayBar scene={scene} data={replay} logSubs={logSubs.current} noteSubs={noteSubs.current} onExit={exitReplay} />}
+      {!replay && menu === 'plays' && <PlaysPanel onPlay={startReplay} onClose={() => setMenu(null)} onError={setError} recordingId={recording?.id ?? null} version={agents.length} />}
+      {!replay && menu === 'world' && <WorldTools scene={scene} onClose={() => setMenu(null)} onError={setError} />}
+
+      {!replay && phys && physOpen && (
+        <section className="physics" aria-label="Spielphysik">
+          <div className="panel-head">
+            <h2>Spielphysik</h2>
+            <div className="row">
+              <button className="ghost" onClick={() => setPhysics({ ...phys.def })}>Standard</button>
+              <button className="ghost" onClick={() => setMenu(null)} aria-label="Schliessen">✕</button>
+            </div>
+          </div>
+          {PHYS_FIELDS.map((f) => (
+            <label key={f.key} className="slider" title={f.tip}>
+              <span>{f.label}</span>
+              <input type="range" min={phys.range[f.key][0]} max={phys.range[f.key][1]} step={f.step} value={phys.now[f.key]}
+                onChange={(e) => setPhysics({ [f.key]: Number(e.target.value) })} />
+              <b>{f.fmt(phys.now[f.key])}</b>
+            </label>
+          ))}
+          <label className="slider">
+            <span>Form des Felsens</span>
+            <select value={rockShape} onChange={(e) => { setRockShape(e.target.value); control({ rockShape: e.target.value }); }}>
+              <option value="block">Block</option>
+              <option value="ball">Kugel, rollt</option>
+            </select>
+            <b />
+          </label>
+          <p className="hint">Wirkt sofort, auch während die Simulation läuft. Was Agenten über Tempo und Sprunghöhe notiert haben, stimmt nach einer Änderung nicht mehr.</p>
+        </section>
+      )}
 
       {error && <div className="toast" onClick={() => setError('')}>{error}</div>}
     </div>

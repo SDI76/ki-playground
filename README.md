@@ -137,7 +137,8 @@ Agent anklicken, das Panel öffnet sich.
 - **Zeit läuft** (Echtzeit oder „Wenn alle warten"): siehe [Wartemodus](#wartemodus).
 - **Welt-Reset**: setzt Objekte und Körper auf Anfang und leert den Kontext der Agenten. Ihre Dateien bleiben. Geschieht automatisch nach der eingestellten Weltzeit (Standard 60 min, 0 = nie) oder über **Welt zurücksetzen**.
 - **Hörweite**: wie weit Gesprochenes zu hören ist, in Einheiten der Welt (die Insel ist rund 100 breit). Standard 30, 0 heisst überall. Wer angesprochen wird, während er wartet, wird sofort geweckt; was er gehört hat, steht in seiner nächsten Antwort.
-- **Form des Felsens**: standardmässig ein kantiger Block, der liegen bleibt. Umgestellt auf „Kugel, rollt" wird er sofort an Ort und Stelle getauscht.
+- **Zahnrad**: Spielphysik und Form des Felsens, siehe [Spielphysik](#spielphysik).
+- **Agentenliste**: Der Pfeil neben „Agenten" klappt sie ein, damit sie nicht im Bild steht.
 - **Kamera**: ziehen dreht, Mausrad zoomt. Shift beim Ziehen (oder Rechtsklick-Ziehen) verschiebt den Drehpunkt über die Bodenebene, Alt + Klick holt ihn zurück zur Mitte der Insel. **Kamera folgt …** hält den gewählten Agenten im Bild.
 - **Tokenverbrauch** steht in der Agentenliste unter jedem Agenten, summiert über alle Sitzungen, als „neu" (erstmals gelesen), „Cache" (bekannter Kontext, der bei jeder Anfrage erneut mitgeht und nur rund ein Zehntel kostet) und „aus" (vom Modell geschrieben). Die Maus darauf zeigt die Aufteilung (neu, aus dem Cache, Ausgabe) und bei Claude Code die Kosten abgeschlossener Läufe. Für extern gesteuerte Agenten ist der Verbrauch nicht bekannt.
 - **Sprechblasen** zeigen, was ein Agent gerade denkt oder sagt.
@@ -149,6 +150,41 @@ Agent anklicken, das Panel öffnet sich.
 - **Protokoll**: Gedanken, Aktionen und Ergebnisse in zeitlicher Folge.
 - **Verbindung**: Token, `curl`-Beispiel und der fertige Befehl, um den Körper als MCP-Server in Claude Code einzubinden.
 - Das Panel lässt sich an der Kopfzeile **verschieben** und an der Ecke unten rechts in der Grösse ändern. Doppelklick auf die Kopfzeile oder ⇥ dockt es wieder rechts an.
+
+## Spielphysik
+
+Das Zahnrad in der Leiste öffnet ein Menü mit sechs Reglern: Gewicht der Objekte, Reibung, Kippträgheit, Schwerkraft,
+Lauftempo und Sprungkraft, dazu die Form des Felsens (Block oder Kugel). Die Regler wirken sofort, auch während die
+Simulation läuft, und bleiben gespeichert. „Standard" setzt alles zurück.
+
+Würfel sind von Haus aus zehnmal so schwer wie ein Agent sie bräuchte, um sie wegzuschieben: Ein Stapel bleibt stehen,
+wenn jemand hineinläuft. Tragen und Werfen hängen nicht vom Gewicht ab. Wer Tempo, Sprungkraft oder Schwerkraft ändert,
+macht ungültig, was die Agenten darüber notiert haben.
+
+## In die Welt eingreifen
+
+**＋ Welt** in der Leiste öffnet ein Menü für Eingriffe im laufenden Betrieb:
+
+- **Setzen:** Würfel, Fels oder Ring wählen und in die Welt klicken. Jeder Klick setzt ein weiteres Ding.
+- **Entfernen:** ein Ding anklicken.
+- **Stimme:** allen Agenten etwas zurufen. Sie hören es unabhängig von der Hörweite und werden aus einem `Wait` geweckt.
+
+Gesetzte Dinge verschwinden beim nächsten Welt-Reset.
+
+## Aufnehmen und abspielen
+
+Ein Durchgang lässt sich aufnehmen und später ohne KI abspielen: Bewegungen, Gesprochenes, Gedanken und Notiz-Meldungen.
+
+- **Autorecord** nimmt jeden Durchgang automatisch auf; ein Welt-Reset beginnt ein neues Play.
+- **● Aufnahme** startet und stoppt eine Aufnahme von Hand.
+- **Plays** zeigt die Liste: abspielen, Name und Notiz ändern, löschen, als `.kiplay`-Datei exportieren und solche Dateien importieren.
+- Im **Replay** gibt es eine Zeitleiste zum Springen und Tempo bis 16×. „Zurück zur Simulation" kehrt in die Live-Ansicht zurück;
+  die Simulation läuft währenddessen weiter.
+
+Die Aufnahmen liegen in einer SQLite-Datei unter `data/replays.db` (Node bringt SQLite mit, es gibt keinen eigenen Datenbank-Server).
+Gespeichert wird nur, was sich bewegt hat; drei Agenten in Dauerbewegung ergeben rund 3 MB pro Stunde Weltzeit, dazu kommen
+die Texte der Agenten. Ein exportiertes Play enthält die Insel, die Bewegungen und die Meldungen, aber weder Tokens noch die
+Dateien der Agenten.
 
 ## Wartemodus
 
@@ -188,6 +224,7 @@ Der Preis: Die Welt bewegt sich in Schüben statt fliessend, und der langsamste 
 | `server/agents.ts` | Agenten, Tokens, Arbeitsordner, Erkennen von Dateiänderungen |
 | `server/templates.ts` | Startdateien neuer Agenten (`SOUL.md` usw.) und `API.md` |
 | `server/tools.ts` | eine Werkzeugliste für HTTP-API, MCP und den eingebauten Loop |
+| `server/recorder.ts` | nimmt Plays in SQLite auf, Export und Import |
 | `server/runner.ts` | treibt Agenten an: Claude Code, Codex oder Modell über Endpunkt; setzt die Sandbox |
 | `server/index.ts` | HTTP, WebSocket, MCP unter `/mcp` |
 | `client/src/` | Weboberfläche (React) und 3D-Ansicht (Three.js) |

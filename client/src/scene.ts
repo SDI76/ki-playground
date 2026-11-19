@@ -47,6 +47,13 @@ export class Scene {
   private ro: ResizeObserver;
   follow: string | null = null;
   private recenter = false;
+  /** Auswahl per Klick: eine Stelle am Boden oder ein Ding. */
+  onPick: ((hit: { point?: number[]; objId?: number }) => void) | null = null;
+  private pickMode: 'ground' | 'object' | null = null;
+  setPickMode(m: 'ground' | 'object' | null) {
+    this.pickMode = m;
+    this.renderer.domElement.style.cursor = m ? 'crosshair' : '';
+  }
   private home = new THREE.Vector3(0, 2, 0);
 
   constructor(private host: HTMLElement) {
@@ -69,6 +76,25 @@ export class Scene {
       this.recenter = e.altKey;
       if (e.altKey) e.stopImmediatePropagation();
     }, { capture: true });
+    // Klick ohne Ziehen: im Setz- oder Entfern-Modus eine Stelle oder ein Ding auswählen
+    let down: { x: number; y: number } | null = null;
+    this.renderer.domElement.addEventListener('pointerdown', (e) => { down = { x: e.clientX, y: e.clientY }; });
+    this.renderer.domElement.addEventListener('pointerup', (e) => {
+      const d = down;
+      down = null;
+      if (!d || !this.pickMode || !this.onPick || Math.hypot(e.clientX - d.x, e.clientY - d.y) > 5) return;
+      const r = this.renderer.domElement.getBoundingClientRect();
+      const ray = new THREE.Raycaster();
+      ray.setFromCamera(new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1), this.camera);
+      if (this.pickMode === 'ground') {
+        const hit = ray.intersectObjects([this.staticGroup, ...[...this.objs.values()].map((o) => o.node)], true)[0];
+        if (hit) this.onPick({ point: [hit.point.x, hit.point.y, hit.point.z] });
+      } else {
+        for (const [id, o] of this.objs) {
+          if (ray.intersectObject(o.node, true).length) { this.onPick({ objId: id }); break; }
+        }
+      }
+    });
     this.controls.maxPolarAngle = Math.PI / 2 - 0.04;
     this.controls.minDistance = 6;
     this.controls.maxDistance = 260;
