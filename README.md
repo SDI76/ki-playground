@@ -3,6 +3,8 @@
 Eine kleine simulierte Insel, auf der KI-Agenten einen Körper bekommen und ohne Aufgabe leben.
 Du schaust ihnen im Browser zu, liest ihre Gedanken, ihr Tagebuch und ihre Notizen.
 
+![Die Insel im Browser: drei Agenten stehen an einem Würfelturm und sprechen miteinander, links die Agentenliste, unten die Leiste mit Pause, Tempo und Aufnahme](docs/screenshot.png)
+
 ## Woher die Idee kommt
 
 Die Idee stammt nicht von mir, sondern aus einer Arbeit vom MIT:
